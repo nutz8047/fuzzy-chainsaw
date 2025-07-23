@@ -166,7 +166,7 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
       dragMode: 'move',
       aspectRatio: 16 / 9,
       autoCropArea: 0.6,
-      viewMode: 1, // Restrict crop box to canvas
+      viewMode: 0, // Allow crop box to extend outside canvas - this might be the key!
       
       // Event callbacks using CropperJS v1 API - sticky behavior is always enabled
       ready: () => {
@@ -362,8 +362,7 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
     if (!currentCanvasData) return;
     
     // Calculate new crop box position based PURELY on relative position to the canvas
-    // No boundary constraints - let it go outside viewport if needed
-    const newCropBoxData = {
+    const idealCropBoxData = {
       left: currentCanvasData.left + (this.relativeCropData.leftPercent * currentCanvasData.width),
       top: currentCanvasData.top + (this.relativeCropData.topPercent * currentCanvasData.height),
       width: this.relativeCropData.widthPercent * currentCanvasData.width,
@@ -373,24 +372,71 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
     console.log('Applying sticky position (no constraints):', {
       currentCanvas: currentCanvasData,
       relativeCropData: this.relativeCropData,
-      calculatedCropBox: newCropBoxData,
+      idealCropBox: idealCropBoxData,
       beforeCropBox: this.cropper.getCropBoxData()
     });
     
     // Prevent recursive updates
     this.isInternalUpdate = true;
     
-    // Apply the new crop box position - let CropperJS handle any constraints it needs
-    this.cropper.setCropBoxData(newCropBoxData);
+    // Apply the new crop box position
+    this.cropper.setCropBoxData(idealCropBoxData);
+    
+    // Check what CropperJS actually set vs what we wanted
+    const actualCropBoxData = this.cropper.getCropBoxData();
+    const wasModified = (
+      Math.abs(actualCropBoxData.left - idealCropBoxData.left) > 0.1 ||
+      Math.abs(actualCropBoxData.top - idealCropBoxData.top) > 0.1 ||
+      Math.abs(actualCropBoxData.width - idealCropBoxData.width) > 0.1 ||
+      Math.abs(actualCropBoxData.height - idealCropBoxData.height) > 0.1
+    );
     
     console.log('After applying sticky position:', {
-      actualCropBox: this.cropper.getCropBoxData()
+      idealCropBox: idealCropBoxData,
+      actualCropBox: actualCropBoxData,
+      wasModifiedByCropper: wasModified,
+      differences: {
+        leftDiff: actualCropBoxData.left - idealCropBoxData.left,
+        topDiff: actualCropBoxData.top - idealCropBoxData.top,
+        widthDiff: actualCropBoxData.width - idealCropBoxData.width,
+        heightDiff: actualCropBoxData.height - idealCropBoxData.height
+      }
     });
+    
+    // If CropperJS modified our crop box, we might need to recalculate our relative data
+    // to match what CropperJS actually allows
+    if (wasModified) {
+      console.warn('CropperJS modified our crop box data - this might be due to internal constraints');
+      
+      // Option 1: Accept what CropperJS set and update our relative data
+      // This would make the crop box "snap" to CropperJS constraints
+      // Uncomment the next line to enable this behavior:
+      // this.updateRelativeDataFromActualCropBox(actualCropBoxData, currentCanvasData);
+      
+      // Option 2: Try to force our ideal position (might cause issues)
+      // For now, we'll just log it and accept CropperJS constraints
+    }
     
     // Reset flag after a short delay to allow the update to complete
     setTimeout(() => {
       this.isInternalUpdate = false;
     }, 20);
+  }
+  
+  // Helper method to update relative data based on what CropperJS actually set
+  private updateRelativeDataFromActualCropBox(actualCropBox: any, canvasData: any) {
+    this.relativeCropData = {
+      leftPercent: (actualCropBox.left - canvasData.left) / canvasData.width,
+      topPercent: (actualCropBox.top - canvasData.top) / canvasData.height,
+      widthPercent: actualCropBox.width / canvasData.width,
+      heightPercent: actualCropBox.height / canvasData.height,
+      capturedAt: {
+        ...this.relativeCropData.capturedAt,
+        canvas: { ...canvasData },
+        cropBox: { ...actualCropBox }
+      }
+    };
+    console.log('Updated relative data based on CropperJS constraints:', this.relativeCropData);
   }
   
   // Public methods for component interaction
