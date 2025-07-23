@@ -369,7 +369,7 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
       height: this.relativeCropData.heightPercent * currentCanvasData.height
     };
     
-    console.log('Applying sticky position (no constraints):', {
+    console.log('Applying sticky position:', {
       currentCanvas: currentCanvasData,
       relativeCropData: this.relativeCropData,
       idealCropBox: idealCropBoxData,
@@ -391,30 +391,23 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
       Math.abs(actualCropBoxData.height - idealCropBoxData.height) > 0.1
     );
     
-    console.log('After applying sticky position:', {
+    console.log('After initial setCropBoxData:', {
       idealCropBox: idealCropBoxData,
       actualCropBox: actualCropBoxData,
-      wasModifiedByCropper: wasModified,
-      differences: {
-        leftDiff: actualCropBoxData.left - idealCropBoxData.left,
-        topDiff: actualCropBoxData.top - idealCropBoxData.top,
-        widthDiff: actualCropBoxData.width - idealCropBoxData.width,
-        heightDiff: actualCropBoxData.height - idealCropBoxData.height
-      }
+      wasModifiedByCropper: wasModified
     });
     
-    // If CropperJS modified our crop box, we might need to recalculate our relative data
-    // to match what CropperJS actually allows
+    // If CropperJS modified our crop box, force it back using direct DOM manipulation
     if (wasModified) {
-      console.warn('CropperJS modified our crop box data - this might be due to internal constraints');
+      console.log('CropperJS modified our crop box - forcing it back...');
+      this.forceCropBoxPosition(idealCropBoxData);
       
-      // Option 1: Accept what CropperJS set and update our relative data
-      // This would make the crop box "snap" to CropperJS constraints
-      // Uncomment the next line to enable this behavior:
-      // this.updateRelativeDataFromActualCropBox(actualCropBoxData, currentCanvasData);
-      
-      // Option 2: Try to force our ideal position (might cause issues)
-      // For now, we'll just log it and accept CropperJS constraints
+      // Verify the force worked
+      const finalCropBoxData = this.cropper.getCropBoxData();
+      console.log('After forcing position:', {
+        finalCropBox: finalCropBoxData,
+        wasForceSuccessful: this.compareCropBoxData(finalCropBoxData, idealCropBoxData)
+      });
     }
     
     // Reset flag after a short delay to allow the update to complete
@@ -423,20 +416,101 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
     }, 20);
   }
   
-  // Helper method to update relative data based on what CropperJS actually set
-  private updateRelativeDataFromActualCropBox(actualCropBox: any, canvasData: any) {
-    this.relativeCropData = {
-      leftPercent: (actualCropBox.left - canvasData.left) / canvasData.width,
-      topPercent: (actualCropBox.top - canvasData.top) / canvasData.height,
-      widthPercent: actualCropBox.width / canvasData.width,
-      heightPercent: actualCropBox.height / canvasData.height,
-      capturedAt: {
-        ...this.relativeCropData.capturedAt,
-        canvas: { ...canvasData },
-        cropBox: { ...actualCropBox }
+  // Force crop box position using direct DOM manipulation
+  private forceCropBoxPosition(idealData: any) {
+    // Get the crop box element directly from the DOM
+    const cropBoxElement = this.cropperImage.nativeElement.parentElement?.querySelector('.cropper-crop-box') as HTMLElement;
+    
+    if (cropBoxElement) {
+      // Apply the position and size directly to the DOM element
+      cropBoxElement.style.left = `${idealData.left}px`;
+      cropBoxElement.style.top = `${idealData.top}px`;
+      cropBoxElement.style.width = `${idealData.width}px`;
+      cropBoxElement.style.height = `${idealData.height}px`;
+      
+      console.log('Directly manipulated crop box DOM element:', {
+        applied: {
+          left: idealData.left,
+          top: idealData.top,
+          width: idealData.width,
+          height: idealData.height
+        }
+      });
+      
+      // Also update any child elements that might need repositioning
+      const cropBoxCenter = cropBoxElement.querySelector('.cropper-point.point-center') as HTMLElement;
+      if (cropBoxCenter) {
+        // Center point should be in the middle of the crop box
+        cropBoxCenter.style.left = `${idealData.width / 2}px`;
+        cropBoxCenter.style.top = `${idealData.height / 2}px`;
       }
-    };
-    console.log('Updated relative data based on CropperJS constraints:', this.relativeCropData);
+      
+      // Update corner and edge points
+      const points = cropBoxElement.querySelectorAll('.cropper-point');
+      points.forEach((point, index) => {
+        const pointElement = point as HTMLElement;
+        const className = pointElement.className;
+        
+        // Position corner and edge points based on crop box dimensions
+        if (className.includes('point-nw')) {
+          pointElement.style.left = '0px';
+          pointElement.style.top = '0px';
+        } else if (className.includes('point-ne')) {
+          pointElement.style.left = `${idealData.width}px`;
+          pointElement.style.top = '0px';
+        } else if (className.includes('point-sw')) {
+          pointElement.style.left = '0px';
+          pointElement.style.top = `${idealData.height}px`;
+        } else if (className.includes('point-se')) {
+          pointElement.style.left = `${idealData.width}px`;
+          pointElement.style.top = `${idealData.height}px`;
+        } else if (className.includes('point-n')) {
+          pointElement.style.left = `${idealData.width / 2}px`;
+          pointElement.style.top = '0px';
+        } else if (className.includes('point-s')) {
+          pointElement.style.left = `${idealData.width / 2}px`;
+          pointElement.style.top = `${idealData.height}px`;
+        } else if (className.includes('point-w')) {
+          pointElement.style.left = '0px';
+          pointElement.style.top = `${idealData.height / 2}px`;
+        } else if (className.includes('point-e')) {
+          pointElement.style.left = `${idealData.width}px`;
+          pointElement.style.top = `${idealData.height / 2}px`;
+        }
+      });
+      
+      // Try to force CropperJS to acknowledge our changes by triggering a manual update
+      // This is a bit hacky but should work
+      setTimeout(() => {
+        if (this.cropper) {
+          // Force cropper to recalculate its internal state
+          try {
+            // Temporarily disable events to prevent recursion
+            const originalIsInternalUpdate = this.isInternalUpdate;
+            this.isInternalUpdate = true;
+            
+            // Try to force an internal update
+            (this.cropper as any).setCropBoxData(idealData);
+            
+            this.isInternalUpdate = originalIsInternalUpdate;
+          } catch (error) {
+            console.warn('Error forcing cropper update:', error);
+          }
+        }
+      }, 5);
+    } else {
+      console.warn('Could not find crop box DOM element for direct manipulation');
+    }
+  }
+  
+  // Helper to compare crop box data with tolerance
+  private compareCropBoxData(actual: any, ideal: any, tolerance: number = 0.1): boolean {
+    return (
+      Math.abs(actual.left - ideal.left) <= tolerance &&
+      Math.abs(actual.top - ideal.top) <= tolerance &&
+      Math.abs(actual.width - ideal.width) <= tolerance &&
+      Math.abs(actual.height - ideal.height) <= tolerance
+    );
   }
   
   // Public methods for component interaction
