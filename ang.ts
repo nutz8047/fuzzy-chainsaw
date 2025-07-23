@@ -357,33 +357,21 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
   private applyRelativePosition() {
     if (!this.cropper || !this.relativeCropData || this.isInternalUpdate) return;
     
-    const currentImageData = this.cropper.getImageData();
     const currentCanvasData = this.cropper.getCanvasData();
-    const currentContainerData = this.cropper.getContainerData();
     
-    if (!currentImageData || !currentCanvasData || !currentContainerData) return;
+    if (!currentCanvasData) return;
     
-    // Check if canvas has been constrained by viewport boundaries
-    const originalCanvas = this.relativeCropData.capturedAt.canvas;
-    const canvasMovedByConstraints = this.detectCanvasConstraintMovement(originalCanvas, currentCanvasData, currentContainerData);
-    
-    // Calculate new crop box position based on current canvas position and size
-    let newCropBoxData = {
+    // Calculate new crop box position based PURELY on relative position to the canvas
+    // No boundary constraints - let it go outside viewport if needed
+    const newCropBoxData = {
       left: currentCanvasData.left + (this.relativeCropData.leftPercent * currentCanvasData.width),
       top: currentCanvasData.top + (this.relativeCropData.topPercent * currentCanvasData.height),
       width: this.relativeCropData.widthPercent * currentCanvasData.width,
       height: this.relativeCropData.heightPercent * currentCanvasData.height
     };
     
-    // If canvas was constrained, we may need to adjust the crop box to stay within visible bounds
-    if (canvasMovedByConstraints.detected) {
-      newCropBoxData = this.adjustCropBoxForConstraints(newCropBoxData, currentCanvasData, currentContainerData);
-    }
-    
-    console.log('Applying sticky position:', {
+    console.log('Applying sticky position (no constraints):', {
       currentCanvas: currentCanvasData,
-      currentContainer: currentContainerData,
-      canvasConstraints: canvasMovedByConstraints,
       relativeCropData: this.relativeCropData,
       calculatedCropBox: newCropBoxData,
       beforeCropBox: this.cropper.getCropBoxData()
@@ -392,7 +380,7 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
     // Prevent recursive updates
     this.isInternalUpdate = true;
     
-    // Apply the new crop box position
+    // Apply the new crop box position - let CropperJS handle any constraints it needs
     this.cropper.setCropBoxData(newCropBoxData);
     
     console.log('After applying sticky position:', {
@@ -403,74 +391,6 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
     setTimeout(() => {
       this.isInternalUpdate = false;
     }, 20);
-  }
-  
-  private detectCanvasConstraintMovement(originalCanvas: any, currentCanvas: any, container: any) {
-    // Calculate expected canvas position based on zoom ratio
-    const scaleRatio = currentCanvas.width / originalCanvas.width;
-    const expectedLeft = originalCanvas.left * scaleRatio;
-    const expectedTop = originalCanvas.top * scaleRatio;
-    
-    // Check if actual position differs significantly from expected (indicating constraint)
-    const leftDiff = Math.abs(currentCanvas.left - expectedLeft);
-    const topDiff = Math.abs(currentCanvas.top - expectedTop);
-    const threshold = 5; // pixels
-    
-    const wasConstrained = leftDiff > threshold || topDiff > threshold;
-    
-    // Detect which boundaries caused the constraint
-    const constraints = {
-      left: currentCanvas.left > 0, // Canvas pushed right due to left boundary
-      right: (currentCanvas.left + currentCanvas.width) < container.width, // Canvas pushed left due to right boundary
-      top: currentCanvas.top > 0, // Canvas pushed down due to top boundary
-      bottom: (currentCanvas.top + currentCanvas.height) < container.height // Canvas pushed up due to bottom boundary
-    };
-    
-    return {
-      detected: wasConstrained,
-      expectedLeft,
-      expectedTop,
-      actualLeft: currentCanvas.left,
-      actualTop: currentCanvas.top,
-      leftDiff,
-      topDiff,
-      constraints
-    };
-  }
-  
-  private adjustCropBoxForConstraints(cropBoxData: any, canvasData: any, containerData: any) {
-    // Ensure crop box stays within the visible canvas area
-    const adjustedCropBox = { ...cropBoxData };
-    
-    // Constrain crop box to canvas boundaries
-    if (adjustedCropBox.left < canvasData.left) {
-      adjustedCropBox.left = canvasData.left;
-    }
-    if (adjustedCropBox.top < canvasData.top) {
-      adjustedCropBox.top = canvasData.top;
-    }
-    if (adjustedCropBox.left + adjustedCropBox.width > canvasData.left + canvasData.width) {
-      adjustedCropBox.left = canvasData.left + canvasData.width - adjustedCropBox.width;
-    }
-    if (adjustedCropBox.top + adjustedCropBox.height > canvasData.top + canvasData.height) {
-      adjustedCropBox.top = canvasData.top + canvasData.height - adjustedCropBox.height;
-    }
-    
-    // Also constrain to container boundaries (viewport)
-    if (adjustedCropBox.left < 0) {
-      adjustedCropBox.left = 0;
-    }
-    if (adjustedCropBox.top < 0) {
-      adjustedCropBox.top = 0;
-    }
-    if (adjustedCropBox.left + adjustedCropBox.width > containerData.width) {
-      adjustedCropBox.left = containerData.width - adjustedCropBox.width;
-    }
-    if (adjustedCropBox.top + adjustedCropBox.height > containerData.height) {
-      adjustedCropBox.top = containerData.height - adjustedCropBox.height;
-    }
-    
-    return adjustedCropBox;
   }
   
   // Public methods for component interaction
