@@ -314,40 +314,43 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
     
     const imageData = this.cropper.getImageData();
     const cropBoxData = this.cropper.getCropBoxData();
+    const canvasData = this.cropper.getCanvasData();
+    const containerData = this.cropper.getContainerData();
     
-    if (!imageData || !cropBoxData) return;
+    if (!imageData || !cropBoxData || !canvasData || !containerData) return;
     
-    // Use natural dimensions for more stable relative positioning
-    const naturalWidth = imageData.naturalWidth;
-    const naturalHeight = imageData.naturalHeight;
-    
-    // Calculate the actual image position accounting for transformations
-    const imageLeft = imageData.left;
-    const imageTop = imageData.top;
-    const imageWidth = imageData.width;
-    const imageHeight = imageData.height;
-    
-    // Calculate relative position based on natural image coordinates
-    // Convert crop box position to natural image coordinates
-    const relativeLeft = (cropBoxData.left - imageLeft) / imageWidth;
-    const relativeTop = (cropBoxData.top - imageTop) / imageHeight;
-    const relativeWidth = cropBoxData.width / imageWidth;
-    const relativeHeight = cropBoxData.height / imageHeight;
+    // Calculate relative position based on the actual visible image area
+    // This accounts for the canvas (image wrapper) position and size
+    const relativeLeft = (cropBoxData.left - canvasData.left) / canvasData.width;
+    const relativeTop = (cropBoxData.top - canvasData.top) / canvasData.height;
+    const relativeWidth = cropBoxData.width / canvasData.width;
+    const relativeHeight = cropBoxData.height / canvasData.height;
     
     this.relativeCropData = {
       leftPercent: relativeLeft,
       topPercent: relativeTop,
       widthPercent: relativeWidth,
       heightPercent: relativeHeight,
-      // Store natural dimensions for reference
-      naturalWidth: naturalWidth,
-      naturalHeight: naturalHeight
+      // Store reference data for debugging
+      capturedAt: {
+        image: { ...imageData },
+        canvas: { ...canvasData },
+        container: { ...containerData },
+        cropBox: { ...cropBoxData }
+      }
     };
     
     console.log('Captured relative position:', {
       cropBox: cropBoxData,
+      canvas: canvasData,
       image: imageData,
-      relative: this.relativeCropData
+      container: containerData,
+      calculated: {
+        leftPercent: relativeLeft,
+        topPercent: relativeTop,
+        widthPercent: relativeWidth,
+        heightPercent: relativeHeight
+      }
     });
   }
   
@@ -355,27 +358,32 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
     if (!this.cropper || !this.relativeCropData || this.isInternalUpdate) return;
     
     const currentImageData = this.cropper.getImageData();
-    if (!currentImageData) return;
+    const currentCanvasData = this.cropper.getCanvasData();
+    const currentContainerData = this.cropper.getContainerData();
     
-    // Calculate new crop box position based on current image transformation
-    const imageLeft = currentImageData.left;
-    const imageTop = currentImageData.top;
-    const imageWidth = currentImageData.width;
-    const imageHeight = currentImageData.height;
+    if (!currentImageData || !currentCanvasData || !currentContainerData) return;
     
-    // Apply the relative positioning
+    // Calculate new crop box position based on current canvas position and size
     const newCropBoxData = {
-      left: imageLeft + (this.relativeCropData.leftPercent * imageWidth),
-      top: imageTop + (this.relativeCropData.topPercent * imageHeight),
-      width: this.relativeCropData.widthPercent * imageWidth,
-      height: this.relativeCropData.heightPercent * imageHeight
+      left: currentCanvasData.left + (this.relativeCropData.leftPercent * currentCanvasData.width),
+      top: currentCanvasData.top + (this.relativeCropData.topPercent * currentCanvasData.height),
+      width: this.relativeCropData.widthPercent * currentCanvasData.width,
+      height: this.relativeCropData.heightPercent * currentCanvasData.height
     };
     
     console.log('Applying sticky position:', {
+      currentCanvas: currentCanvasData,
       currentImage: currentImageData,
+      currentContainer: currentContainerData,
       relativeCropData: this.relativeCropData,
       calculatedCropBox: newCropBoxData,
-      beforeCropBox: this.cropper.getCropBoxData()
+      beforeCropBox: this.cropper.getCropBoxData(),
+      comparison: {
+        canvasLeft: { old: this.relativeCropData.capturedAt.canvas.left, new: currentCanvasData.left },
+        canvasTop: { old: this.relativeCropData.capturedAt.canvas.top, new: currentCanvasData.top },
+        canvasWidth: { old: this.relativeCropData.capturedAt.canvas.width, new: currentCanvasData.width },
+        canvasHeight: { old: this.relativeCropData.capturedAt.canvas.height, new: currentCanvasData.height }
+      }
     });
     
     // Prevent recursive updates
