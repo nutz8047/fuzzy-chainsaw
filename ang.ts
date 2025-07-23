@@ -136,6 +136,14 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
   private isInternalUpdate = false;
   private lastCropEventTime = 0;
   
+  // Store the ideal crop data that we want to maintain
+  private idealCropBoxData: any = null;
+  private idealImageData: any = null;
+  private idealCanvasData: any = null;
+  
+  // Track zoom state to detect zoom out events
+  private lastZoomRatio: number = 1;
+  
   // Signals for reactive state management
   imageUrl = signal('https://via.placeholder.com/800x600/4CAF50/white?text=Sample+Image');
   cropData = signal<any>(null);
@@ -277,19 +285,37 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
           return;
         }
         
+        // Detect zoom direction
+        const isZoomingOut = event.detail.ratio < event.detail.oldRatio;
+        const isZoomingIn = event.detail.ratio > event.detail.oldRatio;
+        
+        console.log('Zoom direction:', { isZoomingIn, isZoomingOut });
+        
         // For zoom events, we need to handle differently
         if (!this.isInternalUpdate) {
-          // Capture the relative position BEFORE zoom effect takes place
-          console.log('About to capture relative position before zoom...');
-          this.captureRelativePosition();
-          
-          // Apply sticky behavior after zoom completes
-          setTimeout(() => {
-            console.log('Applying sticky position after zoom...');
-            this.applyRelativePosition();
-            console.log('=== ZOOM EVENT END ===');
-          }, 100);
+          if (isZoomingIn) {
+            // When zooming in, capture current state and apply sticky behavior
+            console.log('Zooming in - capturing and applying sticky position...');
+            this.captureRelativePosition();
+            this.captureIdealState(); // Store the ideal state
+            
+            setTimeout(() => {
+              this.applyRelativePosition();
+              console.log('=== ZOOM IN END ===');
+            }, 100);
+          } else if (isZoomingOut) {
+            // When zooming out, reapply the ideal crop box data
+            console.log('Zooming out - reapplying ideal crop box data...');
+            
+            setTimeout(() => {
+              this.reapplyIdealCropBox();
+              console.log('=== ZOOM OUT END ===');
+            }, 100);
+          }
         }
+        
+        // Update last zoom ratio for future comparisons
+        this.lastZoomRatio = event.detail.ratio;
       }
     });
   }
@@ -379,36 +405,12 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
     // Prevent recursive updates
     this.isInternalUpdate = true;
     
-    // Apply the new crop box position
+    // Apply the new crop box position (let CropperJS constrain if needed)
     this.cropper.setCropBoxData(idealCropBoxData);
     
-    // Check what CropperJS actually set vs what we wanted
-    const actualCropBoxData = this.cropper.getCropBoxData();
-    const wasModified = (
-      Math.abs(actualCropBoxData.left - idealCropBoxData.left) > 0.1 ||
-      Math.abs(actualCropBoxData.top - idealCropBoxData.top) > 0.1 ||
-      Math.abs(actualCropBoxData.width - idealCropBoxData.width) > 0.1 ||
-      Math.abs(actualCropBoxData.height - idealCropBoxData.height) > 0.1
-    );
-    
-    console.log('After initial setCropBoxData:', {
-      idealCropBox: idealCropBoxData,
-      actualCropBox: actualCropBoxData,
-      wasModifiedByCropper: wasModified
+    console.log('After applying sticky position:', {
+      actualCropBox: this.cropper.getCropBoxData()
     });
-    
-    // If CropperJS modified our crop box, force it back using direct DOM manipulation
-    if (wasModified) {
-      console.log('CropperJS modified our crop box - forcing it back...');
-      this.forceCropBoxPosition(idealCropBoxData);
-      
-      // Verify the force worked
-      const finalCropBoxData = this.cropper.getCropBoxData();
-      console.log('After forcing position:', {
-        finalCropBox: finalCropBoxData,
-        wasForceSuccessful: this.compareCropBoxData(finalCropBoxData, idealCropBoxData)
-      });
-    }
     
     // Reset flag after a short delay to allow the update to complete
     setTimeout(() => {
@@ -416,101 +418,90 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
     }, 20);
   }
   
-  // Force crop box position using direct DOM manipulation
-  private forceCropBoxPosition(idealData: any) {
-    // Get the crop box element directly from the DOM
-    const cropBoxElement = this.cropperImage.nativeElement.parentElement?.querySelector('.cropper-crop-box') as HTMLElement;
+  // Capture the ideal state that we want to maintain
+  private captureIdealState() {
+    if (!this.cropper) return;
     
-    if (cropBoxElement) {
-      // Apply the position and size directly to the DOM element
-      cropBoxElement.style.left = `${idealData.left}px`;
-      cropBoxElement.style.top = `${idealData.top}px`;
-      cropBoxElement.style.width = `${idealData.width}px`;
-      cropBoxElement.style.height = `${idealData.height}px`;
-      
-      console.log('Directly manipulated crop box DOM element:', {
-        applied: {
-          left: idealData.left,
-          top: idealData.top,
-          width: idealData.width,
-          height: idealData.height
-        }
-      });
-      
-      // Also update any child elements that might need repositioning
-      const cropBoxCenter = cropBoxElement.querySelector('.cropper-point.point-center') as HTMLElement;
-      if (cropBoxCenter) {
-        // Center point should be in the middle of the crop box
-        cropBoxCenter.style.left = `${idealData.width / 2}px`;
-        cropBoxCenter.style.top = `${idealData.height / 2}px`;
-      }
-      
-      // Update corner and edge points
-      const points = cropBoxElement.querySelectorAll('.cropper-point');
-      points.forEach((point, index) => {
-        const pointElement = point as HTMLElement;
-        const className = pointElement.className;
-        
-        // Position corner and edge points based on crop box dimensions
-        if (className.includes('point-nw')) {
-          pointElement.style.left = '0px';
-          pointElement.style.top = '0px';
-        } else if (className.includes('point-ne')) {
-          pointElement.style.left = `${idealData.width}px`;
-          pointElement.style.top = '0px';
-        } else if (className.includes('point-sw')) {
-          pointElement.style.left = '0px';
-          pointElement.style.top = `${idealData.height}px`;
-        } else if (className.includes('point-se')) {
-          pointElement.style.left = `${idealData.width}px`;
-          pointElement.style.top = `${idealData.height}px`;
-        } else if (className.includes('point-n')) {
-          pointElement.style.left = `${idealData.width / 2}px`;
-          pointElement.style.top = '0px';
-        } else if (className.includes('point-s')) {
-          pointElement.style.left = `${idealData.width / 2}px`;
-          pointElement.style.top = `${idealData.height}px`;
-        } else if (className.includes('point-w')) {
-          pointElement.style.left = '0px';
-          pointElement.style.top = `${idealData.height / 2}px`;
-        } else if (className.includes('point-e')) {
-          pointElement.style.left = `${idealData.width}px`;
-          pointElement.style.top = `${idealData.height / 2}px`;
-        }
-      });
-      
-      // Try to force CropperJS to acknowledge our changes by triggering a manual update
-      // This is a bit hacky but should work
-      setTimeout(() => {
-        if (this.cropper) {
-          // Force cropper to recalculate its internal state
-          try {
-            // Temporarily disable events to prevent recursion
-            const originalIsInternalUpdate = this.isInternalUpdate;
-            this.isInternalUpdate = true;
-            
-            // Try to force an internal update
-            (this.cropper as any).setCropBoxData(idealData);
-            
-            this.isInternalUpdate = originalIsInternalUpdate;
-          } catch (error) {
-            console.warn('Error forcing cropper update:', error);
-          }
-        }
-      }, 5);
-    } else {
-      console.warn('Could not find crop box DOM element for direct manipulation');
-    }
+    // Store what we consider the "true" crop box data
+    this.idealCropBoxData = { ...this.cropper.getCropBoxData() };
+    this.idealImageData = { ...this.cropper.getImageData() };
+    this.idealCanvasData = { ...this.cropper.getCanvasData() };
+    
+    console.log('Captured ideal state:', {
+      idealCropBox: this.idealCropBoxData,
+      idealImage: this.idealImageData,
+      idealCanvas: this.idealCanvasData
+    });
   }
   
-  // Helper to compare crop box data with tolerance
-  private compareCropBoxData(actual: any, ideal: any, tolerance: number = 0.1): boolean {
-    return (
-      Math.abs(actual.left - ideal.left) <= tolerance &&
-      Math.abs(actual.top - ideal.top) <= tolerance &&
-      Math.abs(actual.width - ideal.width) <= tolerance &&
-      Math.abs(actual.height - ideal.height) <= tolerance
-    );
+  // Reapply the ideal crop box when zooming out
+  private reapplyIdealCropBox() {
+    if (!this.cropper || !this.idealCropBoxData || this.isInternalUpdate) return;
+    
+    console.log('Reapplying ideal crop box data:', this.idealCropBoxData);
+    
+    this.isInternalUpdate = true;
+    
+    // Try to restore the ideal crop box
+    this.cropper.setCropBoxData(this.idealCropBoxData);
+    
+    // Also recapture relative position for future zooms
+    this.captureRelativePosition();
+    
+    setTimeout(() => {
+      this.isInternalUpdate = false;
+    }, 20);
+  }
+  
+  // Our custom getData method that returns the ideal crop data
+  getIdealCropData(rounded: boolean = false): any {
+    if (!this.idealCropBoxData || !this.idealImageData) {
+      // Fallback to current data if no ideal data stored
+      return this.cropper?.getData(rounded) || null;
+    }
+    
+    // Calculate crop data based on ideal crop box and image data
+    const cropData = {
+      x: this.idealCropBoxData.left - this.idealImageData.left,
+      y: this.idealCropBoxData.top - this.idealImageData.top,
+      width: this.idealCropBoxData.width,
+      height: this.idealCropBoxData.height,
+      rotate: this.idealImageData.rotate || 0,
+      scaleX: this.idealImageData.scaleX || 1,
+      scaleY: this.idealImageData.scaleY || 1
+    };
+    
+    if (rounded) {
+      cropData.x = Math.round(cropData.x);
+      cropData.y = Math.round(cropData.y);
+      cropData.width = Math.round(cropData.width);
+      cropData.height = Math.round(cropData.height);
+    }
+    
+    console.log('Getting ideal crop data:', cropData);
+    return cropData;
+  }
+  
+  // Our custom getImageData method that returns the ideal image data
+  getIdealImageData(): any {
+    if (!this.idealImageData) {
+      // Fallback to current data if no ideal data stored
+      return this.cropper?.getImageData() || null;
+    }
+    
+    console.log('Getting ideal image data:', this.idealImageData);
+    return { ...this.idealImageData };
+  }
+  
+  // Our custom getCropBoxData method that returns the ideal crop box data
+  getIdealCropBoxData(): any {
+    if (!this.idealCropBoxData) {
+      // Fallback to current data if no ideal data stored
+      return this.cropper?.getCropBoxData() || null;
+    }
+    
+    console.log('Getting ideal crop box data:', this.idealCropBoxData);
+    return { ...this.idealCropBoxData };
   }
   
   // Public methods for component interaction
@@ -556,14 +547,8 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
   }
   
   getCroppedImage() {
-    if (!this.cropper) return;
-    
-    const canvas = this.cropper.getCroppedCanvas({
-      width: 800,
-      height: 600,
-      imageSmoothingEnabled: true,
-      imageSmoothingQuality: 'high'
-    });
+    const canvas = this.getCroppedCanvas();
+    if (!canvas) return;
     
     // Convert to blob and create download link
     canvas.toBlob((blob) => {
