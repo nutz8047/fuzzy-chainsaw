@@ -229,12 +229,12 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
       },
       
       crop: (event: any) => {
-        // Update crop data whenever crop box changes
+        // Update crop data whenever crop box changes (no rounding)
         this.cropData.set({
-          x: Math.round(event.detail.x),
-          y: Math.round(event.detail.y),
-          width: Math.round(event.detail.width),
-          height: Math.round(event.detail.height),
+          x: event.detail.x,
+          y: event.detail.y,
+          width: event.detail.width,
+          height: event.detail.height,
           rotate: event.detail.rotate,
           scaleX: event.detail.scaleX,
           scaleY: event.detail.scaleY
@@ -246,39 +246,49 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
         // that might not be caught by other events
         const currentTime = Date.now();
         
-        // Throttle this event to avoid excessive updates
-        if (!this.lastCropEventTime || currentTime - this.lastCropEventTime > 50) {
+        // Throttle this event to avoid excessive updates, but capture position for zoom events
+        if (!this.lastCropEventTime || currentTime - this.lastCropEventTime > 100) {
           this.lastCropEventTime = currentTime;
           
+          // Always keep our relative position updated for manual crop box changes
           setTimeout(() => {
-            // Check if this was triggered by image transformation vs crop box adjustment
-            // We can't directly detect this, so we'll just ensure our relative position is current
             if (!this.isInternalUpdate) {
               this.captureRelativePosition();
             }
-          }, 10);
+          }, 20);
         }
       },
       
       zoom: (event: any) => {
+        console.log('=== ZOOM EVENT START ===');
         console.log('Zoom event:', {
           ratio: event.detail.ratio,
-          oldRatio: event.detail.oldRatio
+          oldRatio: event.detail.oldRatio,
+          originalEvent: event.detail.originalEvent?.type
         });
         
         // Optional: Limit zoom range
         if (event.detail.ratio > 3) {
           event.preventDefault(); // Prevent excessive zoom in
+          return;
         }
         if (event.detail.ratio < 0.1) {
           event.preventDefault(); // Prevent excessive zoom out
+          return;
         }
         
+        // For zoom events, we need to handle differently
         if (!this.isInternalUpdate) {
+          // Capture the relative position BEFORE zoom effect takes place
+          console.log('About to capture relative position before zoom...');
+          this.captureRelativePosition();
+          
           // Apply sticky behavior after zoom completes
           setTimeout(() => {
+            console.log('Applying sticky position after zoom...');
             this.applyRelativePosition();
-          }, 10);
+            console.log('=== ZOOM EVENT END ===');
+          }, 100);
         }
       }
     });
@@ -293,7 +303,7 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
   
   private updateCropData() {
     if (this.cropper) {
-      const data = this.cropper.getData(true); // Get rounded values
+      const data = this.cropper.getData(); // Get precise values without rounding
       this.cropData.set(data);
     }
   }
@@ -307,15 +317,38 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
     
     if (!imageData || !cropBoxData) return;
     
-    // Calculate relative position and size as percentages
+    // Use natural dimensions for more stable relative positioning
+    const naturalWidth = imageData.naturalWidth;
+    const naturalHeight = imageData.naturalHeight;
+    
+    // Calculate the actual image position accounting for transformations
+    const imageLeft = imageData.left;
+    const imageTop = imageData.top;
+    const imageWidth = imageData.width;
+    const imageHeight = imageData.height;
+    
+    // Calculate relative position based on natural image coordinates
+    // Convert crop box position to natural image coordinates
+    const relativeLeft = (cropBoxData.left - imageLeft) / imageWidth;
+    const relativeTop = (cropBoxData.top - imageTop) / imageHeight;
+    const relativeWidth = cropBoxData.width / imageWidth;
+    const relativeHeight = cropBoxData.height / imageHeight;
+    
     this.relativeCropData = {
-      leftPercent: (cropBoxData.left - imageData.left) / imageData.width,
-      topPercent: (cropBoxData.top - imageData.top) / imageData.height,
-      widthPercent: cropBoxData.width / imageData.width,
-      heightPercent: cropBoxData.height / imageData.height
+      leftPercent: relativeLeft,
+      topPercent: relativeTop,
+      widthPercent: relativeWidth,
+      heightPercent: relativeHeight,
+      // Store natural dimensions for reference
+      naturalWidth: naturalWidth,
+      naturalHeight: naturalHeight
     };
     
-    console.log('Captured relative position:', this.relativeCropData);
+    console.log('Captured relative position:', {
+      cropBox: cropBoxData,
+      image: imageData,
+      relative: this.relativeCropData
+    });
   }
   
   private applyRelativePosition() {
@@ -324,15 +357,26 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
     const currentImageData = this.cropper.getImageData();
     if (!currentImageData) return;
     
-    // Calculate new crop box position based on current image position
+    // Calculate new crop box position based on current image transformation
+    const imageLeft = currentImageData.left;
+    const imageTop = currentImageData.top;
+    const imageWidth = currentImageData.width;
+    const imageHeight = currentImageData.height;
+    
+    // Apply the relative positioning
     const newCropBoxData = {
-      left: currentImageData.left + (this.relativeCropData.leftPercent * currentImageData.width),
-      top: currentImageData.top + (this.relativeCropData.topPercent * currentImageData.height),
-      width: this.relativeCropData.widthPercent * currentImageData.width,
-      height: this.relativeCropData.heightPercent * currentImageData.height
+      left: imageLeft + (this.relativeCropData.leftPercent * imageWidth),
+      top: imageTop + (this.relativeCropData.topPercent * imageHeight),
+      width: this.relativeCropData.widthPercent * imageWidth,
+      height: this.relativeCropData.heightPercent * imageHeight
     };
     
-    console.log('Applying sticky position:', newCropBoxData);
+    console.log('Applying sticky position:', {
+      currentImage: currentImageData,
+      relativeCropData: this.relativeCropData,
+      calculatedCropBox: newCropBoxData,
+      beforeCropBox: this.cropper.getCropBoxData()
+    });
     
     // Prevent recursive updates
     this.isInternalUpdate = true;
@@ -340,10 +384,14 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
     // Apply the new crop box position
     this.cropper.setCropBoxData(newCropBoxData);
     
+    console.log('After applying sticky position:', {
+      actualCropBox: this.cropper.getCropBoxData()
+    });
+    
     // Reset flag after a short delay to allow the update to complete
     setTimeout(() => {
       this.isInternalUpdate = false;
-    }, 10);
+    }, 20);
   }
   
   // Public methods for component interaction
