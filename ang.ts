@@ -25,12 +25,24 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
   cropBoxVisibilityState: 'fully-visible' | 'partially-visible' | 'out-of-bounds' = 'fully-visible';
   croppedImageDataUrl: string | null = null;
 
-  ngOnInit() {
+  // CTRL+drag functionality
+  private isCtrlPressed: boolean = false;
+  private isCtrlDragging: boolean = false;
+  private lastMouseX: number = 0;
+  private lastMouseY: number = 0;
+  private boundHandleKeyDown = this.handleKeyDown.bind(this);
+  private boundHandleKeyUp = this.handleKeyUp.bind(this);
+  private boundHandleMouseDown = this.handleMouseDown.bind(this);
+  private boundHandleMouseUp = this.handleMouseUp.bind(this);
+  private boundHandleMouseMove = this.handleMouseMove.bind(this);
 
+  ngOnInit() {
+    this.setupKeyboardEventListeners();
   }
 
   ngAfterViewInit() {
     this.initializeCropper();
+    this.setupMouseEventListeners();
   }
 
   private initializeCropper() {
@@ -355,6 +367,89 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
   ngOnDestroy() {
     if (this.cropper) {
       this.cropper.destroy();
+    }
+    this.removeKeyboardEventListeners();
+    this.removeMouseEventListeners();
+  }
+
+  private setupKeyboardEventListeners() {
+    document.addEventListener('keydown', this.boundHandleKeyDown);
+    document.addEventListener('keyup', this.boundHandleKeyUp);
+  }
+
+  private removeKeyboardEventListeners() {
+    document.removeEventListener('keydown', this.boundHandleKeyDown);
+    document.removeEventListener('keyup', this.boundHandleKeyUp);
+  }
+
+  private setupMouseEventListeners() {
+    if (this.imageElement?.nativeElement) {
+      const cropperContainer = this.imageElement.nativeElement.closest('.cropper-container');
+      if (cropperContainer) {
+        cropperContainer.addEventListener('mousedown', this.boundHandleMouseDown);
+        cropperContainer.addEventListener('mouseup', this.boundHandleMouseUp);
+        cropperContainer.addEventListener('mousemove', this.boundHandleMouseMove);
+      }
+    }
+  }
+
+  private removeMouseEventListeners() {
+    if (this.imageElement?.nativeElement) {
+      const cropperContainer = this.imageElement.nativeElement.closest('.cropper-container');
+      if (cropperContainer) {
+        cropperContainer.removeEventListener('mousedown', this.boundHandleMouseDown);
+        cropperContainer.removeEventListener('mouseup', this.boundHandleMouseUp);
+        cropperContainer.removeEventListener('mousemove', this.boundHandleMouseMove);
+      }
+    }
+  }
+
+  private handleKeyDown(event: KeyboardEvent) {
+    if (event.ctrlKey && !this.isCtrlPressed) {
+      this.isCtrlPressed = true;
+    }
+  }
+
+  private handleKeyUp(event: KeyboardEvent) {
+    if (!event.ctrlKey && this.isCtrlPressed) {
+      this.isCtrlPressed = false;
+      this.isCtrlDragging = false;
+    }
+  }
+
+  private handleMouseDown(event: Event) {
+    const mouseEvent = event as MouseEvent;
+    if (this.isCtrlPressed && mouseEvent.ctrlKey) {
+      this.isCtrlDragging = true;
+      this.lastMouseX = mouseEvent.clientX;
+      this.lastMouseY = mouseEvent.clientY;
+      // Prevent default cropper behavior
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }
+
+  private handleMouseUp(event: Event) {
+    if (this.isCtrlDragging) {
+      this.isCtrlDragging = false;
+    }
+  }
+
+  private handleMouseMove(event: Event) {
+    const mouseEvent = event as MouseEvent;
+    if (this.isCtrlDragging && this.cropper) {
+      const deltaX = mouseEvent.clientX - this.lastMouseX;
+      const deltaY = mouseEvent.clientY - this.lastMouseY;
+      
+      // Use cropper's move method to move the image
+      this.cropper.move(deltaX, deltaY);
+      
+      this.lastMouseX = mouseEvent.clientX;
+      this.lastMouseY = mouseEvent.clientY;
+      
+      // Prevent default behavior
+      event.preventDefault();
+      event.stopPropagation();
     }
   }
 }
