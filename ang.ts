@@ -18,16 +18,12 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
   private originalCropData: any = null;
   private isUserInteracting: boolean = false;
   private originalCroppedSnapshot: string | null = null;
+  private pendingDeltas: { x: number, y: number, width: number, height: number } = { x: 0, y: 0, width: 0, height: 0 };
+  private hasUserMadeChanges: boolean = false;
+  private hasDeferredUpdate: boolean = false;
+  private lastCropDataBeforeUserChanges: any = null;
   cropBoxVisibilityState: 'fully-visible' | 'partially-visible' | 'out-of-bounds' = 'fully-visible';
   croppedImageDataUrl: string | null = null;
-
-  // New properties for zoom adjustment support
-  private isZoomedIn: boolean = false;
-  private baseZoomRatio: number = 1;
-  private cropBoxModifiedWhileZoomed: boolean = false;
-  private lastKnownCropBoxData: any = null;
-  private previousZoomRatio: number = 1;
-  private cropBoxWasModifiedDuringZoom: boolean = false;
 
   ngOnInit() {
 
@@ -51,168 +47,68 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
         cropBoxMovable: true,
         cropBoxResizable: true,
         toggleDragModeOnDblclick: true,
-        crop: (event) => {
-          console.log('Crop data:', event.detail);
-          
-          // Track crop box modifications during zoom
-          if (this.isZoomedIn && this.isUserInteracting) {
-            this.cropBoxModifiedWhileZoomed = true;
-          }
-        },
         cropstart: () => {
           this.isUserInteracting = true;
-          this.lastKnownCropBoxData = this.cropper?.getCropBoxData();
+          this.hasUserMadeChanges = true;
+          // Capture crop data before user starts making changes
+          this.lastCropDataBeforeUserChanges = this.cropper.getData();
         },
         cropend: () => {
           this.isUserInteracting = false;
-          
-          // Handle crop box modifications during zoom
-          if (this.cropBoxModifiedWhileZoomed && this.isZoomedIn) {
-            this.handleZoomedCropBoxModification();
-            this.cropBoxModifiedWhileZoomed = false;
-          } else {
-            this.updateOriginalCropData();
+          // Only update original crop data if user actually made changes AND crop box is fully visible
+          if (this.hasUserMadeChanges) {
+            const visibility = this.checkOriginalCropBoxVisibility();
+            if (visibility === 'fully-visible') {
+              // When fully visible, the current crop data represents the user's true intent
+              this.originalCropData = this.cropper.getData();
+            } else {
+              // Calculate what the user actually changed while partially visible
+              const currentCropData = this.cropper.getData();
+              const deltaX = currentCropData.x - this.lastCropDataBeforeUserChanges.x;
+              const deltaY = currentCropData.y - this.lastCropDataBeforeUserChanges.y;
+              const deltaWidth = currentCropData.width - this.lastCropDataBeforeUserChanges.width;
+              const deltaHeight = currentCropData.height - this.lastCropDataBeforeUserChanges.height;
+
+              // Store the deltas to apply later
+              this.pendingDeltas = {
+                x: deltaX,
+                y: deltaY,
+                width: deltaWidth,
+                height: deltaHeight
+              };
+
+              this.hasDeferredUpdate = true;
+            }
+            this.hasUserMadeChanges = false;
           }
-          
           // Capture snapshot after user finishes interacting if crop box is fully visible
           this.updateSnapshotIfVisible();
         },
-        zoom: (event) => {
-          // Detect zoom state and zoom direction
-          const currentZoomRatio = event.detail.ratio;
-          const previouslyZoomedIn = this.isZoomedIn;
-          const wasZoomingOut = this.previousZoomRatio > currentZoomRatio;
-          
-          this.isZoomedIn = currentZoomRatio > this.baseZoomRatio * 1.1; // 10% threshold for zoom detection
-          
-          console.log('Zoom event:', {
-            ratio: currentZoomRatio,
-            previousRatio: this.previousZoomRatio,
-            baseRatio: this.baseZoomRatio,
-            isZoomedIn: this.isZoomedIn,
-            previouslyZoomedIn: previouslyZoomedIn,
-            wasZoomingOut: wasZoomingOut,
-            cropBoxWasModified: this.cropBoxWasModifiedDuringZoom
-          });
-
-          // Handle zoom out after crop box was modified during zoom
-          if (previouslyZoomedIn && !this.isZoomedIn && this.cropBoxWasModifiedDuringZoom) {
-            console.log('Detected zoom out after crop box modification - will reapply sticky position');
-            // Flag for sticky position reapplication after zoom out
+        zoom: () => {
+          if (!this.isUserInteracting && this.originalCropData) {
             setTimeout(() => {
-              if (this.originalCropData) {
-                this.applyStickyPosition();
-                console.log('Applied sticky position after zoom out with modified crop data');
-              }
-            }, 50); // Slightly longer delay to ensure zoom operation completes
-          } else if (!this.isUserInteracting && this.originalCropData) {
-            setTimeout(() => this.applyStickyPosition(), 0);
+              this.applyStickyPosition();
+              // Check if we have a deferred update and crop box is now fully visible
+              this.checkForDeferredUpdate();
+            }, 0);
           }
-
-          this.previousZoomRatio = currentZoomRatio;
-        },
-        ready: () => {
-          // Store base zoom ratio when cropper is ready
-          const imageData = this.cropper.getImageData();
-          const canvasData = this.cropper.getCanvasData();
-          this.baseZoomRatio = canvasData.width / canvasData.naturalWidth;
-          this.previousZoomRatio = this.baseZoomRatio;
-          
-          console.log('Cropper ready - base zoom ratio:', this.baseZoomRatio);
         }
       });
     }
   }
 
-  private handleZoomedCropBoxModification() {
-    if (!this.cropper || !this.originalCropData) return;
-
-    const currentCropBoxData = this.cropper.getCropBoxData();
-    const currentVisibility = this.checkCropBoxVisibility(currentCropBoxData);
-    
-    // Only handle modifications when crop box is partially visible
-    // (fully visible modifications are handled normally, out-of-bounds are ignored)
-    if (currentVisibility !== 'partially-visible') {
-      console.log('Crop box modification ignored - not partially visible:', currentVisibility);
-      this.updateOriginalCropData();
-      return;
-    }
-
-    console.log('Processing zoomed crop box modification:', {
-      currentCropBoxData,
-      lastKnownCropBoxData: this.lastKnownCropBoxData,
-      visibility: currentVisibility
-    });
-
-    // Convert current crop box position back to original image coordinates
-    const newOriginalCropData = this.convertDisplayCoordsToImageCoords(currentCropBoxData);
-    
-    if (newOriginalCropData) {
-      // Update the original crop data with the new position/dimensions
-      this.originalCropData = newOriginalCropData;
-      
-      // Mark that crop box was modified during zoom for zoom-out handling
-      this.cropBoxWasModifiedDuringZoom = true;
-      
-      console.log('Updated original crop data after zoom modification:', {
-        oldOriginalCropData: this.originalCropData,
-        newOriginalCropData: newOriginalCropData,
-        currentCropBox: currentCropBoxData
-      });
-      
-      // Clear snapshot since crop area has changed
-      this.originalCroppedSnapshot = null;
-    }
-  }
-
-  private convertDisplayCoordsToImageCoords(cropBoxData: any): any {
-    if (!this.cropper) return null;
-
-    const imageData = this.cropper.getImageData();
-    const canvasData = this.cropper.getCanvasData();
-
-    // Calculate current scale factors
-    const scaleX = canvasData.width / canvasData.naturalWidth;
-    const scaleY = canvasData.height / canvasData.naturalHeight;
-
-    // Convert crop box coordinates back to image coordinates
-    const imageCoords = {
-      x: (cropBoxData.left - canvasData.left) / scaleX,
-      y: (cropBoxData.top - canvasData.top) / scaleY,
-      width: cropBoxData.width / scaleX,
-      height: cropBoxData.height / scaleY,
-      rotate: this.originalCropData?.rotate || 0,
-      scaleX: this.originalCropData?.scaleX || 1,
-      scaleY: this.originalCropData?.scaleY || 1
-    };
-
-    // Ensure coordinates are within image bounds
-    imageCoords.x = Math.max(0, Math.min(imageCoords.x, canvasData.naturalWidth - imageCoords.width));
-    imageCoords.y = Math.max(0, Math.min(imageCoords.y, canvasData.naturalHeight - imageCoords.height));
-    imageCoords.width = Math.max(1, Math.min(imageCoords.width, canvasData.naturalWidth - imageCoords.x));
-    imageCoords.height = Math.max(1, Math.min(imageCoords.height, canvasData.naturalHeight - imageCoords.y));
-
-    console.log('Coordinate conversion:', {
-      cropBoxData,
-      canvasData,
-      scaleX,
-      scaleY,
-      imageCoords
-    });
-
-    return imageCoords;
-  }
-
   getCroppedImage() {
+    console.log('canvasData', this.cropper.getCanvasData());
+    console.log('cropboxdata', this.cropper.getCropBoxData());
+    console.log('croppedcanvas', this.cropper.getCroppedCanvas());
+    console.log('getData', this.cropper.getData());
+
+    console.log('containerData', this.cropper.getContainerData());
+    console.log('getImageData', this.cropper.getImageData());
+
     // Always return the stored snapshot if available
     if (this.originalCroppedSnapshot) {
       this.croppedImageDataUrl = this.originalCroppedSnapshot;
-
-      console.log('Returning stored snapshot:', {
-        originalCropData: this.originalCropData,
-        cropBoxVisibilityState: this.cropBoxVisibilityState,
-        snapshotLength: this.originalCroppedSnapshot.length
-      });
 
       return this.originalCroppedSnapshot;
     }
@@ -223,10 +119,6 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
       const dataURL = canvas.toDataURL('image/png');
 
       this.croppedImageDataUrl = dataURL;
-
-      console.log('No snapshot available, using current crop box (fallback):', {
-        cropBoxVisibilityState: this.cropBoxVisibilityState
-      });
 
       return dataURL;
     }
@@ -241,20 +133,16 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
     return 'No crop data available';
   }
 
-  getZoomStatus(): string {
-    return this.isZoomedIn ? 'Zoomed In' : 'Normal View';
-  }
-
   reset() {
     if (this.cropper) {
       this.cropper.reset();
       this.originalCropData = null;
       this.originalCroppedSnapshot = null;
       this.croppedImageDataUrl = null;
-      this.cropBoxModifiedWhileZoomed = false;
-      this.isZoomedIn = false;
-      this.cropBoxWasModifiedDuringZoom = false;
-      this.previousZoomRatio = this.baseZoomRatio;
+      this.pendingDeltas = { x: 0, y: 0, width: 0, height: 0 };
+      this.hasUserMadeChanges = false;
+      this.hasDeferredUpdate = false;
+      this.lastCropDataBeforeUserChanges = null;
     }
   }
 
@@ -264,10 +152,36 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
       this.originalCropData = null;
       this.originalCroppedSnapshot = null;
       this.croppedImageDataUrl = null;
-      this.cropBoxModifiedWhileZoomed = false;
-      this.isZoomedIn = false;
-      this.cropBoxWasModifiedDuringZoom = false;
-      this.previousZoomRatio = this.baseZoomRatio;
+      this.pendingDeltas = { x: 0, y: 0, width: 0, height: 0 };
+      this.hasUserMadeChanges = false;
+      this.hasDeferredUpdate = false;
+      this.lastCropDataBeforeUserChanges = null;
+    }
+  }
+
+  private checkForDeferredUpdate() {
+    if (this.hasDeferredUpdate && this.cropper && this.originalCropData) {
+      const visibility = this.checkOriginalCropBoxVisibility();
+      if (visibility === 'fully-visible') {
+        // Now we can permanently apply the deltas to the original crop data
+        const oldOriginalData = { ...this.originalCropData };
+        const appliedDeltas = { ...this.pendingDeltas };
+
+        this.originalCropData = {
+          ...this.originalCropData,
+          x: this.originalCropData.x + this.pendingDeltas.x,
+          y: this.originalCropData.y + this.pendingDeltas.y,
+          width: this.originalCropData.width + this.pendingDeltas.width,
+          height: this.originalCropData.height + this.pendingDeltas.height
+        };
+
+        // Clear the deferred state
+        this.hasDeferredUpdate = false;
+        this.pendingDeltas = { x: 0, y: 0, width: 0, height: 0 };
+
+        // Also update snapshot since we're now fully visible
+        this.updateSnapshotIfVisible();
+      }
     }
   }
 
@@ -278,33 +192,47 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
     return 'Unknown';
   }
 
-  private updateOriginalCropData() {
-    if (this.cropper) {
-      this.originalCropData = this.cropper.getData();
-      console.log('Updated original crop data:', this.originalCropData);
+  private checkOriginalCropBoxVisibility(): 'fully-visible' | 'partially-visible' | 'out-of-bounds' {
+    if (!this.cropper || !this.originalCropData) {
+      // If no original data, fall back to checking current crop box
+      const currentCropBoxData = this.cropper?.getCropBoxData();
+      return currentCropBoxData ? this.checkCropBoxVisibility(currentCropBoxData) : 'out-of-bounds';
     }
+
+    const canvasData = this.cropper.getCanvasData();
+
+    // Calculate where the effective original crop box (with pending deltas) would appear
+    const scaleX = canvasData.width / canvasData.naturalWidth;
+    const scaleY = canvasData.height / canvasData.naturalHeight;
+
+    const effectiveOriginalData = {
+      x: this.originalCropData.x + this.pendingDeltas.x,
+      y: this.originalCropData.y + this.pendingDeltas.y,
+      width: this.originalCropData.width + this.pendingDeltas.width,
+      height: this.originalCropData.height + this.pendingDeltas.height
+    };
+
+    const theoreticalCropBox = {
+      left: canvasData.left + (effectiveOriginalData.x * scaleX),
+      top: canvasData.top + (effectiveOriginalData.y * scaleY),
+      width: effectiveOriginalData.width * scaleX,
+      height: effectiveOriginalData.height * scaleY
+    };
+
+    // Now check visibility of the theoretical crop box (not the clipped version)
+    return this.checkCropBoxVisibility(theoreticalCropBox);
   }
+
 
   private updateSnapshotIfVisible() {
     if (this.cropper) {
-      // Simply check if current crop box is fully visible and capture snapshot
-      const currentCropBoxData = this.cropper.getCropBoxData();
-      const visibility = this.checkCropBoxVisibility(currentCropBoxData);
+      // Check if original crop box area is fully visible and capture snapshot
+      const visibility = this.checkOriginalCropBoxVisibility();
 
       if (visibility === 'fully-visible') {
         // Capture snapshot of current crop selection
         const canvas = this.cropper.getCroppedCanvas();
         this.originalCroppedSnapshot = canvas.toDataURL('image/png');
-
-        console.log('Captured snapshot - crop box fully visible:', {
-          cropBoxData: currentCropBoxData,
-          originalCropData: this.originalCropData,
-          snapshotLength: this.originalCroppedSnapshot.length
-        });
-      } else {
-        console.log('Crop box not fully visible, snapshot not captured:', {
-          visibility: visibility
-        });
       }
     }
   }
@@ -312,7 +240,6 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
   private applyStickyPosition() {
     if (!this.cropper || !this.originalCropData) return;
 
-    const imageData = this.cropper.getImageData();
     const canvasData = this.cropper.getCanvasData();
     const containerData = this.cropper.getContainerData();
 
@@ -320,38 +247,28 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
     const scaleX = canvasData.width / canvasData.naturalWidth;
     const scaleY = canvasData.height / canvasData.naturalHeight;
 
-    // Convert original image coordinates to current container coordinates using canvas position
-    const newCropBoxData = {
-      left: canvasData.left + (this.originalCropData.x * scaleX),
-      top: canvasData.top + (this.originalCropData.y * scaleY),
-      width: this.originalCropData.width * scaleX,
-      height: this.originalCropData.height * scaleY
+    // Use original coordinates plus any pending deltas
+    const effectiveOriginalData = {
+      x: this.originalCropData.x + this.pendingDeltas.x,
+      y: this.originalCropData.y + this.pendingDeltas.y,
+      width: this.originalCropData.width + this.pendingDeltas.width,
+      height: this.originalCropData.height + this.pendingDeltas.height
     };
 
-    // Enhanced debug logging
-    console.log('Sticky Position Debug:', {
-      originalCropData: this.originalCropData,
-      imageData: imageData,
-      canvasData: canvasData,
-      containerData: containerData,
-      scaleX: scaleX,
-      scaleY: scaleY,
-      newCropBoxData: newCropBoxData,
-      isZoomedIn: this.isZoomedIn
-    });
+    // Convert effective original coordinates to current container coordinates using canvas position
+    const newCropBoxData = {
+      left: canvasData.left + (effectiveOriginalData.x * scaleX),
+      top: canvasData.top + (effectiveOriginalData.y * scaleY),
+      width: effectiveOriginalData.width * scaleX,
+      height: effectiveOriginalData.height * scaleY
+    };
 
     // Calculate clipped crop box that fits within viewport
     const clippedCropBoxData = this.calculateClippedCropBox(newCropBoxData, containerData);
-    this.cropBoxVisibilityState = this.checkCropBoxVisibility(newCropBoxData);
+    this.cropBoxVisibilityState = this.checkOriginalCropBoxVisibility();
 
     // Always show crop box (clipped to viewport or as 1x1 when completely out of bounds)
     this.cropper.setCropBoxData(clippedCropBoxData);
-
-    console.log('Crop box updated:', {
-      original: newCropBoxData,
-      clipped: clippedCropBoxData,
-      visibilityState: this.cropBoxVisibilityState
-    });
   }
 
   private checkCropBoxVisibility(cropBoxData: any): 'fully-visible' | 'partially-visible' | 'out-of-bounds' {
@@ -433,11 +350,6 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
       width: 0,
       height: 0
     };
-  }
-
-  private isWithinBounds(cropBoxData: any, canvasData: any): boolean {
-    const visibility = this.checkCropBoxVisibility(cropBoxData);
-    return visibility === 'fully-visible' || visibility === 'partially-visible';
   }
 
   ngOnDestroy() {
