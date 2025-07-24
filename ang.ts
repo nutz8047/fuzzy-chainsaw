@@ -36,6 +36,9 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
   private boundHandleMouseUp = this.handleMouseUp.bind(this);
   private boundHandleMouseMove = this.handleMouseMove.bind(this);
 
+  // Track image position for reference
+  private originalImagePosition: { x: number, y: number } | null = null;
+
   ngOnInit() {
     this.setupKeyboardEventListeners();
   }
@@ -58,7 +61,7 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
         highlight: true,
         cropBoxMovable: true,
         cropBoxResizable: true,
-        toggleDragModeOnDblclick: true,
+        toggleDragModeOnDblclick: false,
         cropstart: () => {
           this.isUserInteracting = true;
           this.hasUserMadeChanges = true;
@@ -73,6 +76,8 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
             if (visibility === 'fully-visible') {
               // When fully visible, the current crop data represents the user's true intent
               this.originalCropData = this.cropper.getData();
+              // Also capture the current image position as our new reference
+              this.captureImagePosition();
             } else {
               // Calculate what the user actually changed while partially visible
               const currentCropData = this.cropper.getData();
@@ -155,6 +160,7 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
       this.hasUserMadeChanges = false;
       this.hasDeferredUpdate = false;
       this.lastCropDataBeforeUserChanges = null;
+      this.originalImagePosition = null;
     }
   }
 
@@ -168,6 +174,7 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
       this.hasUserMadeChanges = false;
       this.hasDeferredUpdate = false;
       this.lastCropDataBeforeUserChanges = null;
+      this.originalImagePosition = null;
     }
   }
 
@@ -268,6 +275,7 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
     };
 
     // Convert effective original coordinates to current container coordinates using canvas position
+    // The canvasData.left/top already includes any image movement from cropper.move()
     const newCropBoxData = {
       left: canvasData.left + (effectiveOriginalData.x * scaleX),
       top: canvasData.top + (effectiveOriginalData.y * scaleY),
@@ -423,6 +431,24 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
       this.isCtrlDragging = true;
       this.lastMouseX = mouseEvent.clientX;
       this.lastMouseY = mouseEvent.clientY;
+      
+      // When starting CTRL+drag, commit any pending deltas to avoid coordinate conflicts
+      // This prevents the crop box from "growing" due to stale delta calculations
+      if (this.cropper && this.originalCropData && this.hasDeferredUpdate) {
+        // Apply pending deltas to the original crop data
+        this.originalCropData = {
+          ...this.originalCropData,
+          x: this.originalCropData.x + this.pendingDeltas.x,
+          y: this.originalCropData.y + this.pendingDeltas.y,
+          width: this.originalCropData.width + this.pendingDeltas.width,
+          height: this.originalCropData.height + this.pendingDeltas.height
+        };
+        
+        // Clear the deferred state since we've applied the deltas
+        this.hasDeferredUpdate = false;
+        this.pendingDeltas = { x: 0, y: 0, width: 0, height: 0 };
+      }
+      
       // Prevent default cropper behavior
       event.preventDefault();
       event.stopPropagation();
@@ -432,6 +458,23 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
   private handleMouseUp(event: Event) {
     if (this.isCtrlDragging) {
       this.isCtrlDragging = false;
+
+      // After manually moving the image, only update our reference points if the crop box is fully visible
+      // This ensures we don't lose the sticky positioning when the crop box goes out of bounds
+      if (this.originalCropData && this.cropper) {
+        const visibility = this.checkOriginalCropBoxVisibility();
+        
+        if (visibility === 'fully-visible') {
+          // Only update original crop data when fully visible - just like in the cropend handler
+          const currentCropData = this.cropper.getData();
+          this.originalCropData = currentCropData;
+          this.captureImagePosition();
+
+          // Also update snapshot since we're fully visible
+          this.updateSnapshotIfVisible();
+        }
+        // If not fully visible, keep the existing originalCropData and let sticky positioning handle it
+      }
     }
   }
 
@@ -440,16 +483,37 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
     if (this.isCtrlDragging && this.cropper) {
       const deltaX = mouseEvent.clientX - this.lastMouseX;
       const deltaY = mouseEvent.clientY - this.lastMouseY;
-      
+
       // Use cropper's move method to move the image
       this.cropper.move(deltaX, deltaY);
-      
+
       this.lastMouseX = mouseEvent.clientX;
       this.lastMouseY = mouseEvent.clientY;
-      
+
+      // Apply sticky positioning to show where the original crop box should be
+      // relative to the moved image position (deferred to avoid conflicts)
+      if (this.originalCropData) {
+        setTimeout(() => {
+          if (this.originalCropData) {
+            this.applyStickyPosition();
+          }
+        }, 0);
+      }
+
       // Prevent default behavior
       event.preventDefault();
       event.stopPropagation();
+    }
+  }
+
+  private captureImagePosition() {
+    if (this.cropper) {
+      const canvasData = this.cropper.getCanvasData();
+      this.originalImagePosition = {
+        x: canvasData.left,
+        y: canvasData.top
+      };
+      // Reset reference point since we're establishing a new baseline
     }
   }
 }
