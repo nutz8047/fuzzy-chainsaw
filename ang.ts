@@ -26,6 +26,8 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
   private baseZoomRatio: number = 1;
   private cropBoxModifiedWhileZoomed: boolean = false;
   private lastKnownCropBoxData: any = null;
+  private previousZoomRatio: number = 1;
+  private cropBoxWasModifiedDuringZoom: boolean = false;
 
   ngOnInit() {
 
@@ -76,25 +78,45 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
           this.updateSnapshotIfVisible();
         },
         zoom: (event) => {
-          // Detect zoom state
+          // Detect zoom state and zoom direction
           const currentZoomRatio = event.detail.ratio;
+          const previouslyZoomedIn = this.isZoomedIn;
+          const wasZoomingOut = this.previousZoomRatio > currentZoomRatio;
+          
           this.isZoomedIn = currentZoomRatio > this.baseZoomRatio * 1.1; // 10% threshold for zoom detection
           
           console.log('Zoom event:', {
             ratio: currentZoomRatio,
+            previousRatio: this.previousZoomRatio,
             baseRatio: this.baseZoomRatio,
-            isZoomedIn: this.isZoomedIn
+            isZoomedIn: this.isZoomedIn,
+            previouslyZoomedIn: previouslyZoomedIn,
+            wasZoomingOut: wasZoomingOut,
+            cropBoxWasModified: this.cropBoxWasModifiedDuringZoom
           });
 
-          if (!this.isUserInteracting && this.originalCropData) {
+          // Handle zoom out after crop box was modified during zoom
+          if (previouslyZoomedIn && !this.isZoomedIn && this.cropBoxWasModifiedDuringZoom) {
+            console.log('Detected zoom out after crop box modification - will reapply sticky position');
+            // Flag for sticky position reapplication after zoom out
+            setTimeout(() => {
+              if (this.originalCropData) {
+                this.applyStickyPosition();
+                console.log('Applied sticky position after zoom out with modified crop data');
+              }
+            }, 50); // Slightly longer delay to ensure zoom operation completes
+          } else if (!this.isUserInteracting && this.originalCropData) {
             setTimeout(() => this.applyStickyPosition(), 0);
           }
+
+          this.previousZoomRatio = currentZoomRatio;
         },
         ready: () => {
           // Store base zoom ratio when cropper is ready
           const imageData = this.cropper.getImageData();
           const canvasData = this.cropper.getCanvasData();
           this.baseZoomRatio = canvasData.width / canvasData.naturalWidth;
+          this.previousZoomRatio = this.baseZoomRatio;
           
           console.log('Cropper ready - base zoom ratio:', this.baseZoomRatio);
         }
@@ -128,6 +150,9 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
     if (newOriginalCropData) {
       // Update the original crop data with the new position/dimensions
       this.originalCropData = newOriginalCropData;
+      
+      // Mark that crop box was modified during zoom for zoom-out handling
+      this.cropBoxWasModifiedDuringZoom = true;
       
       console.log('Updated original crop data after zoom modification:', {
         oldOriginalCropData: this.originalCropData,
@@ -228,6 +253,8 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
       this.croppedImageDataUrl = null;
       this.cropBoxModifiedWhileZoomed = false;
       this.isZoomedIn = false;
+      this.cropBoxWasModifiedDuringZoom = false;
+      this.previousZoomRatio = this.baseZoomRatio;
     }
   }
 
@@ -239,6 +266,8 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
       this.croppedImageDataUrl = null;
       this.cropBoxModifiedWhileZoomed = false;
       this.isZoomedIn = false;
+      this.cropBoxWasModifiedDuringZoom = false;
+      this.previousZoomRatio = this.baseZoomRatio;
     }
   }
 
