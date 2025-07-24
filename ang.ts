@@ -21,6 +21,12 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
   cropBoxVisibilityState: 'fully-visible' | 'partially-visible' | 'out-of-bounds' = 'fully-visible';
   croppedImageDataUrl: string | null = null;
 
+  // New properties for zoom adjustment support
+  private isZoomedIn: boolean = false;
+  private baseZoomRatio: number = 1;
+  private cropBoxModifiedWhileZoomed: boolean = false;
+  private lastKnownCropBoxData: any = null;
+
   ngOnInit() {
 
   }
@@ -45,23 +51,131 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
         toggleDragModeOnDblclick: true,
         crop: (event) => {
           console.log('Crop data:', event.detail);
+          
+          // Track crop box modifications during zoom
+          if (this.isZoomedIn && this.isUserInteracting) {
+            this.cropBoxModifiedWhileZoomed = true;
+          }
         },
         cropstart: () => {
           this.isUserInteracting = true;
+          this.lastKnownCropBoxData = this.cropper?.getCropBoxData();
         },
         cropend: () => {
           this.isUserInteracting = false;
-          this.updateOriginalCropData();
+          
+          // Handle crop box modifications during zoom
+          if (this.cropBoxModifiedWhileZoomed && this.isZoomedIn) {
+            this.handleZoomedCropBoxModification();
+            this.cropBoxModifiedWhileZoomed = false;
+          } else {
+            this.updateOriginalCropData();
+          }
+          
           // Capture snapshot after user finishes interacting if crop box is fully visible
           this.updateSnapshotIfVisible();
         },
-        zoom: () => {
+        zoom: (event) => {
+          // Detect zoom state
+          const currentZoomRatio = event.detail.ratio;
+          this.isZoomedIn = currentZoomRatio > this.baseZoomRatio * 1.1; // 10% threshold for zoom detection
+          
+          console.log('Zoom event:', {
+            ratio: currentZoomRatio,
+            baseRatio: this.baseZoomRatio,
+            isZoomedIn: this.isZoomedIn
+          });
+
           if (!this.isUserInteracting && this.originalCropData) {
             setTimeout(() => this.applyStickyPosition(), 0);
           }
+        },
+        ready: () => {
+          // Store base zoom ratio when cropper is ready
+          const imageData = this.cropper.getImageData();
+          const canvasData = this.cropper.getCanvasData();
+          this.baseZoomRatio = canvasData.width / canvasData.naturalWidth;
+          
+          console.log('Cropper ready - base zoom ratio:', this.baseZoomRatio);
         }
       });
     }
+  }
+
+  private handleZoomedCropBoxModification() {
+    if (!this.cropper || !this.originalCropData) return;
+
+    const currentCropBoxData = this.cropper.getCropBoxData();
+    const currentVisibility = this.checkCropBoxVisibility(currentCropBoxData);
+    
+    // Only handle modifications when crop box is partially visible
+    // (fully visible modifications are handled normally, out-of-bounds are ignored)
+    if (currentVisibility !== 'partially-visible') {
+      console.log('Crop box modification ignored - not partially visible:', currentVisibility);
+      this.updateOriginalCropData();
+      return;
+    }
+
+    console.log('Processing zoomed crop box modification:', {
+      currentCropBoxData,
+      lastKnownCropBoxData: this.lastKnownCropBoxData,
+      visibility: currentVisibility
+    });
+
+    // Convert current crop box position back to original image coordinates
+    const newOriginalCropData = this.convertDisplayCoordsToImageCoords(currentCropBoxData);
+    
+    if (newOriginalCropData) {
+      // Update the original crop data with the new position/dimensions
+      this.originalCropData = newOriginalCropData;
+      
+      console.log('Updated original crop data after zoom modification:', {
+        oldOriginalCropData: this.originalCropData,
+        newOriginalCropData: newOriginalCropData,
+        currentCropBox: currentCropBoxData
+      });
+      
+      // Clear snapshot since crop area has changed
+      this.originalCroppedSnapshot = null;
+    }
+  }
+
+  private convertDisplayCoordsToImageCoords(cropBoxData: any): any {
+    if (!this.cropper) return null;
+
+    const imageData = this.cropper.getImageData();
+    const canvasData = this.cropper.getCanvasData();
+
+    // Calculate current scale factors
+    const scaleX = canvasData.width / canvasData.naturalWidth;
+    const scaleY = canvasData.height / canvasData.naturalHeight;
+
+    // Convert crop box coordinates back to image coordinates
+    const imageCoords = {
+      x: (cropBoxData.left - canvasData.left) / scaleX,
+      y: (cropBoxData.top - canvasData.top) / scaleY,
+      width: cropBoxData.width / scaleX,
+      height: cropBoxData.height / scaleY,
+      rotate: this.originalCropData?.rotate || 0,
+      scaleX: this.originalCropData?.scaleX || 1,
+      scaleY: this.originalCropData?.scaleY || 1
+    };
+
+    // Ensure coordinates are within image bounds
+    imageCoords.x = Math.max(0, Math.min(imageCoords.x, canvasData.naturalWidth - imageCoords.width));
+    imageCoords.y = Math.max(0, Math.min(imageCoords.y, canvasData.naturalHeight - imageCoords.height));
+    imageCoords.width = Math.max(1, Math.min(imageCoords.width, canvasData.naturalWidth - imageCoords.x));
+    imageCoords.height = Math.max(1, Math.min(imageCoords.height, canvasData.naturalHeight - imageCoords.y));
+
+    console.log('Coordinate conversion:', {
+      cropBoxData,
+      canvasData,
+      scaleX,
+      scaleY,
+      imageCoords
+    });
+
+    return imageCoords;
   }
 
   getCroppedImage() {
@@ -102,12 +216,18 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
     return 'No crop data available';
   }
 
+  getZoomStatus(): string {
+    return this.isZoomedIn ? 'Zoomed In' : 'Normal View';
+  }
+
   reset() {
     if (this.cropper) {
       this.cropper.reset();
       this.originalCropData = null;
       this.originalCroppedSnapshot = null;
       this.croppedImageDataUrl = null;
+      this.cropBoxModifiedWhileZoomed = false;
+      this.isZoomedIn = false;
     }
   }
 
@@ -117,6 +237,8 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
       this.originalCropData = null;
       this.originalCroppedSnapshot = null;
       this.croppedImageDataUrl = null;
+      this.cropBoxModifiedWhileZoomed = false;
+      this.isZoomedIn = false;
     }
   }
 
@@ -185,7 +307,8 @@ export class ImageCropperComponent implements OnInit, OnDestroy {
       containerData: containerData,
       scaleX: scaleX,
       scaleY: scaleY,
-      newCropBoxData: newCropBoxData
+      newCropBoxData: newCropBoxData,
+      isZoomedIn: this.isZoomedIn
     });
 
     // Calculate clipped crop box that fits within viewport
