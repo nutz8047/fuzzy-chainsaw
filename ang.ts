@@ -153,7 +153,17 @@ export class ImageCropperComponent implements OnInit, OnDestroy, AfterViewInit {
           // Only update original crop data if user actually made changes
           if (this.hasUserMadeChanges) {
             const visibility = this.checkOriginalCropBoxVisibility();
-            // Apply the exact same successful pattern from zoom event
+            
+            console.log('CROPEND: Processing crop operation', {
+              action: this.currentCropAction,
+              visibility: visibility,
+              currentCropData: this.cropper.getData(),
+              originalCropData: this.originalCropData,
+              hasDeferredUpdate: this.hasDeferredUpdate,
+              pendingDeltas: this.pendingDeltas
+            });
+            
+            // Apply the zoom-like fix for all operations (but handle resize accumulation properly)
             const currentSessionId = this.currentCropSessionId;
             setTimeout(() => {
               // Only apply if we're still in the same crop session (same as zoom)
@@ -168,6 +178,13 @@ export class ImageCropperComponent implements OnInit, OnDestroy, AfterViewInit {
               // This is a new baseline, so we completely reset all pending deltas
               const newCropData = this.cropper.getData();
 
+              console.log('CROPEND: Updating baseline for fully visible crop box', {
+                action: this.currentCropAction,
+                oldOriginalData: this.originalCropData,
+                newCropData: newCropData,
+                hadPendingDeltas: this.hasDeferredUpdate
+              });
+
               // Completely reset state for new crop box
               this.originalCropData = newCropData;
               this.pendingDeltas = { x: 0, y: 0, width: 0, height: 0 };
@@ -177,20 +194,27 @@ export class ImageCropperComponent implements OnInit, OnDestroy, AfterViewInit {
               // Only store deltas if we're modifying an existing crop box (not creating a new one)
               // Check if we have existing original crop data that matches what we started with
               if (this.lastCropDataBeforeUserChanges && this.originalCropData) {
-                // Check if this is a pure move operation (no size change) vs a resize operation
-                const isMoveOperation = Math.abs(this.currentMovementDeltas.width) < 1 &&
-                                       Math.abs(this.currentMovementDeltas.height) < 1;
+                console.log('CROPEND: Accumulating deltas for partially visible crop box', {
+                  action: this.currentCropAction,
+                  currentMovementDeltas: this.currentMovementDeltas,
+                  existingPendingDeltas: this.pendingDeltas,
+                  existingHasDeferredUpdate: this.hasDeferredUpdate
+                });
 
-                if (isMoveOperation) {
-                  // Pure move operation - only store position deltas, preserve original size
+                // CRITICAL FIX: Accumulate deltas instead of replacing them
+                // This allows multiple resize operations to build on each other
+                if (this.hasDeferredUpdate) {
+                  // We already have pending deltas, so ADD the new deltas to the existing ones
+                  console.log('CROPEND: Adding to existing deltas');
                   this.pendingDeltas = {
-                    x: this.currentMovementDeltas.x,
-                    y: this.currentMovementDeltas.y,
-                    width: 0, // Don't change size for move operations
-                    height: 0 // Don't change size for move operations
+                    x: this.pendingDeltas.x + this.currentMovementDeltas.x,
+                    y: this.pendingDeltas.y + this.currentMovementDeltas.y,
+                    width: this.pendingDeltas.width + this.currentMovementDeltas.width,
+                    height: this.pendingDeltas.height + this.currentMovementDeltas.height
                   };
                 } else {
-                  // Resize operation - store all deltas including size changes
+                  // First operation, so store the deltas as-is
+                  console.log('CROPEND: Storing initial deltas');
                   this.pendingDeltas = {
                     x: this.currentMovementDeltas.x,
                     y: this.currentMovementDeltas.y,
@@ -200,13 +224,14 @@ export class ImageCropperComponent implements OnInit, OnDestroy, AfterViewInit {
                 }
 
                 this.hasDeferredUpdate = true;
+                
+                console.log('CROPEND: Final accumulated deltas:', this.pendingDeltas);
               } else {
                 // This is a new crop box that happens to be partially visible
                 // Treat it as a new baseline without deltas
                 this.originalCropData = this.cropper.getData();
                 this.pendingDeltas = { x: 0, y: 0, width: 0, height: 0 };
                 this.hasDeferredUpdate = false;
-
               }
             }
             this.hasUserMadeChanges = false;
