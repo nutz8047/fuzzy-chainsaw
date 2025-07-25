@@ -12,7 +12,7 @@ export class ImageCropperComponent implements OnInit, OnDestroy, AfterViewInit {
   @ViewChild('imageElement', { static: false }) imageElement!: ElementRef<HTMLImageElement>;
 
   private cropper!: Cropper;
-  imageUrl = 'https://picsum.photos/id/1018/800/600';
+  imageUrl = 'https://picsum.photos/id/1018/1600/1200';
 
   // Sticky crop box state management
   private originalCropData: any = null;
@@ -24,6 +24,7 @@ export class ImageCropperComponent implements OnInit, OnDestroy, AfterViewInit {
   private lastCropDataBeforeUserChanges: any = null;
   private currentMovementDeltas: { x: number, y: number, width: number, height: number } = { x: 0, y: 0, width: 0, height: 0 };
   private currentCropSessionId: number = 0;
+  private currentCropAction: string = '';
   cropBoxVisibilityState: 'fully-visible' | 'partially-visible' | 'out-of-bounds' = 'fully-visible';
   croppedImageDataUrl: string | null = null;
 
@@ -70,6 +71,9 @@ export class ImageCropperComponent implements OnInit, OnDestroy, AfterViewInit {
           // Reset current movement deltas at the start of each crop operation
           this.currentMovementDeltas = { x: 0, y: 0, width: 0, height: 0 };
 
+          // Store the current action for use in cropmove
+          this.currentCropAction = event.detail?.action;
+
           // CRITICAL: If this is a new crop operation (action = 'crop'), completely reset state
           if (event.detail?.action === 'crop') {
             // This is a completely new crop box, so clear all previous state
@@ -77,7 +81,6 @@ export class ImageCropperComponent implements OnInit, OnDestroy, AfterViewInit {
             this.pendingDeltas = { x: 0, y: 0, width: 0, height: 0 };
             this.hasDeferredUpdate = false;
           }
-
 
           // Capture the starting position for reference - use getData which is in original image coordinates
           this.lastCropDataBeforeUserChanges = this.cropper.getData();
@@ -89,7 +92,6 @@ export class ImageCropperComponent implements OnInit, OnDestroy, AfterViewInit {
             const currentCropBoxData = this.cropper.getCropBoxData();
 
             // Calculate deltas in original image coordinate space
-            // getData() should return coordinates relative to the original image, not the display
             this.currentMovementDeltas = {
               x: currentCropData.x - this.lastCropDataBeforeUserChanges.x,
               y: currentCropData.y - this.lastCropDataBeforeUserChanges.y,
@@ -97,41 +99,49 @@ export class ImageCropperComponent implements OnInit, OnDestroy, AfterViewInit {
               height: currentCropData.height - this.lastCropDataBeforeUserChanges.height
             };
 
-            const visibility = this.checkCropBoxVisibility(currentCropBoxData);
+            // Only apply fixes when moving existing crop boxes (action = 'move')
+            // Don't interfere with new crop creation (action = 'crop') or resizing (action = 'e', 'w', 'n', 's', etc.)
+            const shouldApplyFix = this.originalCropData && 
+                                  this.currentCropAction === 'move';
 
-            // CRITICAL FIX: Detect and fix clipped crop box dimensions during movement
-            if (visibility === 'fully-visible') {
-              // Check if crop box is significantly smaller than crop data (indicating clipping)
-              const expectedWidth = currentCropData.width;
-              const expectedHeight = currentCropData.height;
-              const actualWidth = currentCropBoxData.width;
-              const actualHeight = currentCropBoxData.height;
+            if (shouldApplyFix) {
+              const visibility = this.checkCropBoxVisibility(currentCropBoxData);
 
-              // Allow for small differences due to scaling, but detect significant clipping
-              const widthRatio = actualWidth / expectedWidth;
-              const heightRatio = actualHeight / expectedHeight;
+              // CRITICAL FIX: Only fix clipped dimensions when moving existing crop boxes
+              if (visibility === 'fully-visible') {
+                // Check if crop box is significantly smaller than crop data (indicating clipping)
+                const expectedWidth = currentCropData.width;
+                const expectedHeight = currentCropData.height;
+                const actualWidth = currentCropBoxData.width;
+                const actualHeight = currentCropBoxData.height;
 
-              if (widthRatio < 0.9 || heightRatio < 0.9) {
-                // Force CropperJS to show correct dimensions by setting the crop data
-                setTimeout(() => {
-                  this.cropper.setData(currentCropData);
-                }, 0);
-              }
+                // Allow for small differences due to scaling, but detect significant clipping
+                const widthRatio = actualWidth / expectedWidth;
+                const heightRatio = actualHeight / expectedHeight;
 
-              // Also handle deferred updates if they exist
-              if (this.hasDeferredUpdate && this.pendingDeltas) {
-                // Apply pending deltas permanently to original crop data
-                this.originalCropData = {
-                  ...this.originalCropData,
-                  x: this.originalCropData.x + this.pendingDeltas.x,
-                  y: this.originalCropData.y + this.pendingDeltas.y,
-                  width: this.originalCropData.width + this.pendingDeltas.width,
-                  height: this.originalCropData.height + this.pendingDeltas.height
-                };
+                if (widthRatio < 0.9 || heightRatio < 0.9) {
+                  console.log('CROPMOVE: Fixing clipped existing crop box during movement');
+                  // Force CropperJS to show correct dimensions by setting the crop data
+                  setTimeout(() => {
+                    this.cropper.setData(currentCropData);
+                  }, 0);
+                }
 
-                // Clear the deferred state
-                this.hasDeferredUpdate = false;
-                this.pendingDeltas = { x: 0, y: 0, width: 0, height: 0 };
+                // Also handle deferred updates if they exist
+                if (this.hasDeferredUpdate && this.pendingDeltas) {
+                  // Apply pending deltas permanently to original crop data
+                  this.originalCropData = {
+                    ...this.originalCropData,
+                    x: this.originalCropData.x + this.pendingDeltas.x,
+                    y: this.originalCropData.y + this.pendingDeltas.y,
+                    width: this.originalCropData.width + this.pendingDeltas.width,
+                    height: this.originalCropData.height + this.pendingDeltas.height
+                  };
+
+                  // Clear the deferred state
+                  this.hasDeferredUpdate = false;
+                  this.pendingDeltas = { x: 0, y: 0, width: 0, height: 0 };
+                }
               }
             }
           }
@@ -267,6 +277,7 @@ export class ImageCropperComponent implements OnInit, OnDestroy, AfterViewInit {
       this.hasDeferredUpdate = false;
       this.lastCropDataBeforeUserChanges = null;
       this.currentCropSessionId = 0;
+      this.currentCropAction = '';
     }
   }
 
@@ -282,6 +293,7 @@ export class ImageCropperComponent implements OnInit, OnDestroy, AfterViewInit {
       this.hasDeferredUpdate = false;
       this.lastCropDataBeforeUserChanges = null;
       this.currentCropSessionId = 0;
+      this.currentCropAction = '';
     }
   }
 
